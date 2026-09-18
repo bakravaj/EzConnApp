@@ -1,0 +1,37 @@
+﻿[
+    {
+        "name":  "protocol-version",
+        "type":  80,
+        "command":  3,
+        "payload":  "",
+        "wire":  "50 04 42 41 03 57 53"
+    },
+    {
+        "name":  "software-version-local",
+        "type":  80,
+        "command":  14,
+        "payload":  "20",
+        "wire":  "50 05 42 41 0E 57 20 7F"
+    },
+    {
+        "name":  "options",
+        "type":  80,
+        "command":  38,
+        "payload":  "",
+        "wire":  "50 04 42 41 26 57 76"
+    },
+    {
+        "name":  "medium-frame",
+        "type":  67,
+        "command":  0,
+        "payload":  "00 7F 80 FF",
+        "wire":  "43 08 00 42 41 00 57 00 7F 80 FF 5C"
+    },
+    {
+        "name":  "large-frame",
+        "type":  66,
+        "command":  0,
+        "payload":  "00 7F 80 FF",
+        "wire":  "42 08 00 00 00 42 41 00 57 00 7F 80 FF 5C"
+    }
+]

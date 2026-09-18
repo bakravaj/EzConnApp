@@ -1,0 +1,8 @@
+.tools/
+artifacts/
+build/
+out/
+.vs/
+dist/
+**/bin/
+**/obj/

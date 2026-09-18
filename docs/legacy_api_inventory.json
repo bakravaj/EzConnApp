@@ -1,0 +1,181 @@
+﻿[
+    {
+        "name":  "Schnell.TeleAssistenza.ArgomentiEventi.MessageEventArgs",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()"
+                         ],
+        "methods":  [
+                        "Boolean get_Flag()",
+                        "Void set_Flag(Boolean)",
+                        "Int32 get_NumeroByte()",
+                        "Void set_NumeroByte(Int32)",
+                        "Byte[] get_Buff()",
+                        "Void set_Buff(Byte[])",
+                        "System.String get_Message()",
+                        "Void set_Message(System.String)"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.MAC.MACManager",
+        "public":  true,
+        "constructors":  [
+
+                         ],
+        "methods":  [
+                        "System.String GetNomeDaMAC(System.String, System.String)",
+                        "System.String selNomeDaMAC(System.String, System.String)"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Protocollo.BytesInsufficientiException",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()"
+                         ],
+        "methods":  [
+
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Protocollo.codifica",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()"
+                         ],
+        "methods":  [
+                        "System.String getCodifica(System.String)"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Protocollo.formatoComando",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()",
+                             "Void .ctor(Byte, Byte, Byte, Byte, Byte, Byte, Byte, Byte[])"
+                         ],
+        "methods":  [
+                        "Boolean get_IsCompressione()",
+                        "Void set_IsCompressione(Boolean)",
+                        "Boolean get_IsTurbo()",
+                        "Void set_IsTurbo(Boolean)",
+                        "Void SetVersione(Byte)",
+                        "Byte GetVersione()",
+                        "Void SetPacchetto(Byte, Byte, Byte, Byte, Byte, Byte, Byte, Byte[])",
+                        "Void SetPacchetto(Byte[])",
+                        "Void SetPacchettoDaRete(Schnell.TeleAssistenza.ArgomentiEventi.MessageEventArgs)",
+                        "Boolean isErrore()",
+                        "System.String GetTestoErrore()",
+                        "Boolean IsCompleto()",
+                        "Byte GetTipoPacchetto()",
+                        "Void SetTipoPacchetto(Byte)",
+                        "Byte GetComando()",
+                        "Byte[] GetDati()",
+                        "System.String GetDatiStr()",
+                        "Void SetDati(Byte[])",
+                        "Byte[] GetPacchettoInByte()",
+                        "Void calcolaDimensione()",
+                        "Void calcolaLRC()"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Protocollo.HTTP",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()"
+                         ],
+        "methods":  [
+                        "System.String get_Metodo()",
+                        "Void set_Metodo(System.String)",
+                        "System.String get_Content_Type()",
+                        "Void set_Content_Type(System.String)",
+                        "System.String get_Host()",
+                        "Void set_Host(System.String)",
+                        "System.String get_Content_Lenght()",
+                        "Void set_Content_Lenght(System.String)",
+                        "System.String get_Expect()",
+                        "Void set_Expect(System.String)",
+                        "System.String get_Connection()",
+                        "Void set_Connection(System.String)",
+                        "Byte[] get_Dati()",
+                        "Void set_Dati(Byte[])",
+                        "System.String GetRichiesta()"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Protocollo.RandomPassword",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()",
+                             "Void .cctor()"
+                         ],
+        "methods":  [
+                        "System.String Generate()",
+                        "System.String Generate(Int32)",
+                        "System.String Generate(Int32, Int32)"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Statistiche.Statistiche",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()",
+                             "Void .cctor()"
+                         ],
+        "methods":  [
+                        "System.Data.DataTable GetInfoAvvioServer()",
+                        "System.Data.DataTable GetLogs(TipoLogs)",
+                        "System.Data.DataTable GetLogs(System.DateTime, TipoLogs)",
+                        "System.Data.DataTable GetInfoAzioniUtente(System.String, System.DateTime)",
+                        "Int32 GetNumeroClientOnLine(ClientAction)",
+                        "System.Data.DataTable GetElencoMatricole(System.String)",
+                        "Void SetMatricola(System.String, System.String)",
+                        "Void CancellaUtenteMatricola(System.String, System.String)",
+                        "System.Data.DataTable eseguiSelect(System.String)",
+                        "Int64 eseguiInsert(System.String)"
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Statistiche.Statistiche+ClientAction",
+        "public":  true,
+        "constructors":  [
+
+                         ],
+        "methods":  [
+
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.Statistiche.Statistiche+TipoLogs",
+        "public":  true,
+        "constructors":  [
+
+                         ],
+        "methods":  [
+
+                    ]
+    },
+    {
+        "name":  "Schnell.TeleAssistenza.User.Autenticazione",
+        "public":  true,
+        "constructors":  [
+                             "Void .ctor()",
+                             "Void .cctor()"
+                         ],
+        "methods":  [
+                        "System.String CriptaStringa(System.String)",
+                        "Boolean IsAutenticato(System.String, System.String, System.String)",
+                        "System.String GetId(System.String, System.String, System.String)",
+                        "System.String GetNomeUtente(System.String, System.String)",
+                        "Boolean IsInRole(System.String, System.String)",
+                        "System.Data.DataTable GetElencoMacPermesse(System.String)",
+                        "System.String encodePassword(System.String)",
+                        "Byte[] hexToByte(System.String)",
+                        "Boolean checkAut(System.String, System.String, System.String)",
+                        "System.String getIdUtente(System.String, System.String, System.String)",
+                        "System.String getUteteId(System.String, System.String)",
+                        "System.Data.DataTable executeSelect(System.String)",
+                        "Int64 executeInsUp(System.String)"
+                    ]
+    }
+]
