@@ -1,6 +1,8 @@
 #include "core/LegacyProtocol.h"
 #include "core/ReadServices.h"
 #include "core/ScreenService.h"
+#include "core/RemoteKey.h"
+#include "core/ScannerService.h"
 #include <QtTest>
 #include <QProcess>
 #include <QCoreApplication>
@@ -24,6 +26,12 @@ public:
     int screenDelayMs=0;
     bool dropScreenReply=false;
     bool slowBlockFragments=false;
+    int keyReplyDelayMs=0;
+    bool dropKeyReply=false;
+    QByteArray keyReplyData=QByteArray(1,char(0));
+    quint8 keyReplyMessage=87;
+    int scannerError=0;
+    bool dropScannerReply=false;
     QByteArray screenFile() const {
         auto source=tinyPcx();
         if(multiScreen) { QRandomGenerator random(123); while(source.size()<260*1024) source.append(char(random.generate()&255)); }
@@ -40,6 +48,9 @@ public:
             if(p.command==14) reply.data="Kaparossa simulator";
             if(p.command==38) reply.data=QByteArray(1,char(0x20));
             if(p.command==3) reply.data=QByteArray(1,char(2));
+            // Actual Kaparossa reply observed for virtual keyboard command.
+            if(p.command==66) { reply.message=keyReplyMessage; reply.data=keyReplyData; }
+            if(p.command==9) { reply.message=scannerError ? 69 : 87; if(scannerError) reply.data=QByteArray(1,char(scannerError)); }
             if(p.command==23) reply.data=".\\\n..\\\nConfig\\\nProgram.RTB\n";
             if(p.command==45) reply.data=QByteArray::fromHex("7856341200100000000010000000080000000000");
             if(p.command==67) { auto kib=(screenFile().size()+1023)/1024; reply.data.append(char(kib&255)); reply.data.append(char(kib>>8)); }
@@ -50,14 +61,16 @@ public:
                 reply.data=screenFile().mid(quint8(p.data[0])*blockBytes,blockBytes);
             }
             auto wire=LegacyCodec::encode(reply);
+            if(p.command==9 && dropScannerReply) continue;
             if(p.command==67 && dropScreenReply) continue;
+            if(p.command==66 && dropKeyReply) continue;
             if(p.command==26 && slowBlockFragments) {
                 QTimer::singleShot(0,this,[this,wire]{emit received(wire.left(2));});
                 QTimer::singleShot(70,this,[this,wire]{emit received(wire.mid(2,2));});
                 QTimer::singleShot(140,this,[this,wire]{emit received(wire.mid(4));});
                 continue;
             }
-            QTimer::singleShot(p.command==67 ? screenDelayMs : 0,this,[this,wire]{ emit received(wire.left(2)); emit received(wire.mid(2)); });
+            QTimer::singleShot(p.command==67 ? screenDelayMs : p.command==66 ? keyReplyDelayMs : 0,this,[this,wire]{ emit received(wire.left(2)); emit received(wire.mid(2)); });
         }
         return bytes.size();
     }
@@ -65,11 +78,190 @@ public:
 class ProtocolTest:public QObject {
     Q_OBJECT
 private slots:
+    void scannerPayloads() {
+        const auto sample=ScannerService::preset(1);
+        const auto data=ScannerService::preparePayload(sample,false,true);
+        QCOMPARE(data,sample.toLatin1()+QByteArray("\r\n",2));
+        QVERIFY(data.endsWith(QByteArray::fromHex("40433735400d0a")));
+        QCOMPARE(ScannerService::preparePayload(sample+"\r\n",false,true),data);
+        QCOMPARE(ScannerService::preparePayload(sample+"\n",false,true),data);
+        QCOMPARE(ScannerService::preparePayload("42 46 32 44 00 FF 0D 0A",true,true),QByteArray::fromHex("4246324400ff0d0a"));
+        QCOMPARE(ScannerService::preparePayload("41",true,false),QByteArray("A"));
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload("",false,true),std::runtime_error);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload(" ",true,true),std::runtime_error);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload("GG",true,false),std::runtime_error);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload("A",true,false),std::runtime_error);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload(QString(QChar(0x410)),false,false),std::runtime_error);
+        QCOMPARE(ScannerService::preparePayload(QString(249,'A'),false,true).size(),251);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload(QString(250,'A'),false,true),std::runtime_error);
+        QVERIFY_EXCEPTION_THROWN(ScannerService::preparePayload(QString(252,'A'),false,false),std::runtime_error);
+        for(int i=0;i<3;++i) QVERIFY(ScannerService::preparePayload(ScannerService::preset(i),false,true).size()<=251);
+    }
+    void scannerSendAndOldFirmware() {
+        MachineSession session; ScannerService scanner(session); ReadServices reads(session);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); session.start(std::move(machine));
+        QSignalSpy done(&scanner,&ScannerService::completed),errors(&scanner,&ScannerService::failed),logs(&scanner,&ScannerService::logLine);
+        const auto payload=ScannerService::preparePayload(ScannerService::preset(1),false,true);
+        scanner.sendScannerPayload(payload); QVERIFY(raw->commands.isEmpty()); // Auth gate.
+        scanner.setReady(true);
+        scanner.sendScannerPayload({}); scanner.sendScannerPayload(QByteArray(252,'A')); QVERIFY(raw->commands.isEmpty());
+        scanner.sendScannerPayload(payload); scanner.sendScannerPayload(payload); // No duplicate while busy.
+        QTRY_COMPARE(done.count(),1);
+        QCOMPARE(raw->commands,QList<int>({9})); QCOMPARE(raw->requests[0].command,CMD_SCANNER_RX_INJECT);
+        QCOMPARE(raw->requests[0].data,payload); QVERIFY(!scanner.busy()); QVERIFY(logs[0][0].toString().contains("<CR><LF>"));
+        raw->scannerError=3; errors.clear(); scanner.sendScannerPayload(payload); QTRY_COMPARE(errors.count(),1);
+        QCOMPARE(errors[0][0].toString(),QString("This Rotor108 firmware does not support Scanner RX Inject (command 9)."));
+        QCOMPARE(session.state(),MachineSession::State::Connected);
+        reads.setReady(true); QSignalSpy disk(&reads,&ReadServices::diskReady); reads.readDisk("D:\\"); QTRY_COMPARE(disk.count(),1);
+        QCOMPARE(raw->commands,QList<int>({9,9,45}));
+        session.stop();
+    }
+    void scannerTimeoutDoesNotRetry() {
+        MachineSession session; ScannerService scanner(session,nullptr,50);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); raw->dropScannerReply=true;
+        session.start(std::move(machine)); scanner.setReady(true);
+        QSignalSpy errors(&scanner,&ScannerService::failed);
+        scanner.sendScannerPayload(QByteArray::fromHex("00ff0d0a"));
+        QTRY_COMPARE(errors.count(),1);
+        QCOMPARE(raw->commands,QList<int>({9})); QCOMPARE(raw->requests[0].data,QByteArray::fromHex("00ff0d0a"));
+        QCOMPARE(session.state(),MachineSession::State::Disconnected); QVERIFY(!scanner.busy());
+        QVERIFY(errors[0][0].toString().contains("not retried"));
+    }
+    void profilerReply_data() {
+        QTest::addColumn<QByteArray>("data");
+        QTest::addColumn<int>("marker");
+        QTest::addColumn<QString>("line");
+        QTest::addColumn<int>("warnings");
+        QTest::newRow("legacy") << QByteArray::fromHex("00") << 87 << QString() << 0;
+        QTest::newRow("short") << QByteArray::fromHex("6402a50200") << 87 << QString() << 0;
+        QTest::newRow("valid") << QByteArray::fromHex("040136011103") << 87
+            << QString("Profiler PLANES: P0=260 ms | P1=310 ms | P2=785 ms | SUM=1355 ms") << 0;
+        QTest::newRow("unsigned") << QByteArray::fromHex("00800180ffff") << 87
+            << QString("Profiler PLANES: P0=32768 ms | P1=32769 ms | P2=65535 ms | SUM=131072 ms") << 0;
+        QTest::newRow("maximum-sum") << QByteArray::fromHex("ffffffffffff") << 87
+            << QString("Profiler PLANES: P0=65535 ms | P1=65535 ms | P2=65535 ms | SUM=196605 ms") << 0;
+        QTest::newRow("zero") << QByteArray(6,char(0)) << 87
+            << QString("Profiler PLANES: P0=0 ms | P1=0 ms | P2=0 ms | SUM=0 ms") << 0;
+        QTest::newRow("descending-independent") << QByteArray::fromHex("0a0005000000") << 87
+            << QString("Profiler PLANES: P0=10 ms | P1=5 ms | P2=0 ms | SUM=15 ms") << 0;
+        QTest::newRow("mixed-independent") << QByteArray::fromHex("0a0005001400") << 87
+            << QString("Profiler PLANES: P0=10 ms | P1=5 ms | P2=20 ms | SUM=35 ms") << 0;
+        QTest::newRow("small-copy") << QByteArray::fromHex("6402a5020100") << 87
+            << QString("Profiler PLANES: P0=612 ms | P1=677 ms | P2=1 ms | SUM=1290 ms") << 0;
+        QTest::newRow("extra") << QByteArray::fromHex("6402a502000000") << 87 << QString() << 1;
+        QTest::newRow("other-marker") << QByteArray::fromHex("6402a5020000") << 82 << QString() << 1;
+    }
+    void profilerReply() {
+        QFETCH(QByteArray,data); QFETCH(int,marker); QFETCH(QString,line); QFETCH(int,warnings);
+        MachineSession session; ScreenService screen(session);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get();
+        raw->keyReplyData=data; raw->keyReplyMessage=quint8(marker);
+        session.start(std::move(machine));
+        QSignalSpy diagnostics(&screen,&ScreenService::profilerLog),frames(&screen,&ScreenService::frameReady),errors(&screen,&ScreenService::failed);
+        screen.start(true); QVERIFY(screen.queueKey(0x70));
+        QTRY_VERIFY(frames.count()>=2);
+        QCOMPARE(errors.count(),0);
+        QCOMPARE(diagnostics.count(),warnings+(line.isEmpty()?0:1));
+        if(warnings) QVERIFY(diagnostics[0][0].toString().contains("debug warning"));
+        if(!line.isEmpty()) QCOMPARE(diagnostics.last()[0].toString(),line);
+        QCOMPARE(raw->commands.mid(0,5),QList<int>({67,26,66,67,26}));
+        QCOMPARE(raw->commands.count(66),1); // No profiler polling.
+        QCOMPARE(raw->requests[2].data,QByteArray::fromHex("000000007000"));
+        screen.stop(); session.stop();
+    }
+    void remoteKeyPayloads() {
+        for(int i=0;i<10;++i) QCOMPARE(RemoteKey::fromQt(Qt::Key_0+i).value(),quint8(0x30+i));
+        for(int i=0;i<26;++i) QCOMPARE(RemoteKey::fromQt(Qt::Key_A+i).value(),quint8(0x41+i));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Delete).value(),quint8(0x2e));
+        QCOMPARE(RemoteKey::keyboardPacket(0x2e).data.toHex(),QByteArray("000000002e00"));
+        QCOMPARE(RemoteKey::keyboardPacket(0x41).data.toHex(),QByteArray("000000004100"));
+        for(int i=0;i<10;++i) {
+            const auto packet=RemoteKey::keyboardPacket(quint8(0x30+i));
+            QCOMPARE(packet.command,quint8(66));
+            QCOMPARE(packet.data.left(5),QByteArray(5,char(0)));
+            QCOMPARE(quint8(packet.data[5]),quint8(0x30+i));
+        }
+        QCOMPARE(RemoteKey::keyboardPacket(0x35).data.toHex(),QByteArray("000000000035"));
+        QCOMPARE(RemoteKey::touchPacket(500,300).data.toHex(),QByteArray("f4012c010000"));
+        QCOMPARE(RemoteKey::touchPacket(65535,65535).data.toHex(),QByteArray("ffffffff0000"));
+        QCOMPARE(RemoteKey::touchPacket(0,0).command,quint8(66));
+        for(int i=0;i<12;++i) QCOMPARE(RemoteKey::fromQt(Qt::Key_F1+i),quint8(0x70+i));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Home),quint8(0x24));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Left),quint8(0x25));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Up),quint8(0x26));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Right),quint8(0x27));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Down),quint8(0x28));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Enter),quint8(0x0d));
+        QCOMPARE(RemoteKey::fromQt(Qt::Key_Return),quint8(0x0d));
+        QVERIFY(!RemoteKey::fromQt(Qt::Key_Escape));
+        const auto packet=RemoteKey::keyboardPacket(0x70);
+        QCOMPARE(packet.command,quint8(66)); QCOMPARE(packet.data,QByteArray::fromHex("000000007000"));
+        QCOMPARE(LegacyCodec::encode(packet).toHex(),QByteArray("500a424142570000000070006c"));
+    }
+    void keysWaitForFrameAndAcknowledgement() {
+        MachineSession session; ScreenService screen(session);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); raw->multiScreen=true; raw->keyReplyDelayMs=200;
+        session.start(std::move(machine)); QSignalSpy logs(&screen,&ScreenService::keyLog);
+        QVERIFY(!screen.queueKey(0x70)); screen.start(true);
+        QVERIFY(screen.queueKey(0x70)); QVERIFY(screen.queueKey(0x24));
+        QTRY_VERIFY(raw->commands.contains(66));
+        QCOMPARE(raw->commands,QList<int>({67,26,26,66}));
+        QCOMPARE(raw->requests.last().data,QByteArray::fromHex("000000007000"));
+        QTest::qWait(50); QCOMPARE(raw->commands.last(),66);
+        QTRY_COMPARE(raw->commands.count(66),2);
+        QCOMPARE(raw->commands,QList<int>({67,26,26,66,67,26,26,66}));
+        QCOMPARE(raw->requests.last().data,QByteArray::fromHex("000000002400"));
+        QVERIFY(logs.count()>=3);
+        QVERIFY(logs[1][0].toString().contains("message 0x57 payload 00"));
+        screen.stop(); QTest::qWait(250); session.stop();
+    }
+    void stoppedStreamDiscardsKeys() {
+        MachineSession session; ScreenService screen(session);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); session.start(std::move(machine));
+        screen.start(true); QVERIFY(screen.queueKey(0x0d)); screen.stop(); QTest::qWait(100);
+        QCOMPARE(raw->commands,QList<int>({67})); session.stop();
+    }
+    void touchAndKeyboardShareFrameQueue() {
+        MachineSession session; ScreenService screen(session);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); raw->keyReplyDelayMs=150;
+        session.start(std::move(machine));
+        QSignalSpy frames(&screen,&ScreenService::frameReady),logs(&screen,&ScreenService::keyLog);
+        QVERIFY(!screen.queueTouch(0,0));
+        connect(&screen,&ScreenService::frameReady,&screen,[&](const QImage&){
+            if(frames.count()==1) { QVERIFY(screen.queueTouch(0,0)); QVERIFY(screen.queueKey(0x41)); QVERIFY(!screen.queueTouch(1,0)); }
+        });
+        screen.start(true);
+        QTRY_VERIFY(raw->commands.contains(66));
+        QCOMPARE(raw->commands,QList<int>({67,26,66}));
+        QCOMPARE(raw->requests.last().data,QByteArray(6,char(0)));
+        QTest::qWait(30); QCOMPARE(raw->commands.last(),66);
+        QTRY_COMPARE(raw->commands.count(66),2);
+        QCOMPARE(raw->commands,QList<int>({67,26,66,67,26,66}));
+        QCOMPARE(raw->requests.last().data,RemoteKey::keyboardPacket(0x41).data);
+        QVERIFY(logs[0][0].toString().contains("TOUCH TX command 66 x=0 y=0"));
+        QVERIFY(logs[1][0].toString().contains("TOUCH RX command 66"));
+        QVERIFY(logs[2][0].toString().contains("KEY TX command 66 A"));
+        screen.stop(); QTest::qWait(200); session.stop();
+        QVERIFY(!screen.queueTouch(0,0));
+    }
+    void keyTimeoutDoesNotRetry() {
+        MachineSession session; ScreenService screen(session,nullptr,100,100);
+        auto machine=std::make_unique<SimulatedMachine>(); auto* raw=machine.get(); raw->dropKeyReply=true; session.start(std::move(machine));
+        QSignalSpy errors(&screen,&ScreenService::failed),logs(&screen,&ScreenService::keyLog);
+        screen.start(true); QVERIFY(screen.queueKey(0x70)); QTRY_COMPARE(errors.count(),1);
+        QCOMPARE(raw->commands,QList<int>({67,26,66})); QVERIFY(logs.last()[0].toString().contains("not retried"));
+        QCOMPARE(session.state(),MachineSession::State::Disconnected);
+    }
     void oracle() {
         QProcess host; host.start(QCoreApplication::applicationDirPath()+"/legacy/EasyConn.LegacyHost.exe",QStringList{});
         QVERIFY(host.waitForStarted());
         QByteArray requests="hello\n";
         QList<QByteArray> expected{"OK legacyhost-1 Schnell.TeleAssistenza.Protocollo.formatoComando"};
+        for(quint8 key:{0x70,0x71,0x72,0x73,0x74,0x75,0x76,0x77,0x78,0x79,0x7a,0x7b,0x24,0x25,0x26,0x27,0x28,0x0d}) {
+            const auto packet=RemoteKey::keyboardPacket(key);
+            requests += "encode 80 66 87 "+packet.data.toHex()+"\n";
+            expected.append("OK "+LegacyCodec::encode(packet).toHex().toUpper());
+        }
         for(quint8 type:{80,67,66}) {
             Packet p; p.type=type; p.command=3; p.data=QByteArray::fromHex("007f80ff");
             auto bytes=LegacyCodec::encode(p);

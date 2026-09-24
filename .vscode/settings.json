@@ -1,0 +1,6 @@
+{
+  "cmake.cmakePath": "C:/msys64/ucrt64/bin/cmake.exe",
+  "cmake.ctestPath": "C:/msys64/ucrt64/bin/ctest.exe",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true
+}

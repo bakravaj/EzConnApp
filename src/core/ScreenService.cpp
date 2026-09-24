@@ -1,4 +1,5 @@
 #include "ScreenService.h"
+#include "RemoteKey.h"
 #include <QtEndian>
 #include <QStandardPaths>
 #include <QDir>
@@ -61,35 +62,70 @@ ScreenService::ScreenService(MachineSession& session,QObject* parent,int respons
         fail(QString("Screen response timeout: command %1, block %2, elapsed %3 ms, frame bytes %4")
             .arg(expected_).arg(block_).arg(requestWait_.elapsed()).arg(frame_.size()));
     });
-    connect(&poll_,&QTimer::timeout,this,[this]{if(active_) request(67,QByteArray(1,char(0)));});
+    connect(&poll_,&QTimer::timeout,this,&ScreenService::nextCycle);
     connect(&session_,&MachineSession::received,this,&ScreenService::receive);
     connect(&session_,&MachineSession::stateChanged,this,[this](auto state){
-        if(state==MachineSession::State::Disconnected && active_) { active_=false; expected_=0; timeout_.stop(); poll_.stop(); emit activeChanged(false); }
+        if(state==MachineSession::State::Disconnected) {
+            if(expected_==66) logKey("Disconnected before confirmed reply for "+currentInput_.label+"; not retried",currentInput_.kind);
+            inputs_.clear();
+            if(active_) { active_=false; expected_=0; timeout_.stop(); poll_.stop(); emit activeChanged(false); }
+        }
     });
 }
 void ScreenService::start(bool continuous) {
     if(active_) return;
     if(session_.state()!=MachineSession::State::Connected) { emit failed("Not connected"); return; }
     codec_.reset(); image_=QImage(); frame_.clear(); continuous_=continuous; stopping_=false; active_=true;
+    inputs_.clear(); currentInput_={};
     firstFrameWait_.start();
     fpsClock_.start(); frameCount_=0; cycle_.start();
     emit activeChanged(true); request(67,QByteArray(1,char(1)));
 }
 void ScreenService::stop() {
+    inputs_.clear();
     if(!active_) return;
     stopping_=true; continuous_=false; poll_.stop();
     // Drain the outstanding response before allowing another service to use the socket.
     if(!expected_) { active_=false; emit activeChanged(false); }
 }
 void ScreenService::fail(const QString& error) {
+    inputs_.clear();
+    if(expected_==66) logKey("No confirmed reply for " + currentInput_.label + ": " + error + "; not retried",currentInput_.kind);
     active_=false; expected_=0; timeout_.stop(); poll_.stop(); session_.stop(); emit activeChanged(false); emit failed(error);
 }
 void ScreenService::request(quint8 command,const QByteArray& data) {
     if(command==67 && !cycle_.isValid()) cycle_.start();
     expected_=command; requestWait_.start();
-    timeout_.start(command==67 ? qMin(5000,responseWaitMs_) : blockIdleMs_);
+    timeout_.start(command==67 || command==66 ? qMin(5000,responseWaitMs_) : blockIdleMs_);
     Packet p; p.command=command; p.data=data;
     if(!session_.send(LegacyCodec::encode(p))) fail("Screen request write failed");
+}
+void ScreenService::logKey(const QString& message,const QString& kind) {
+    emit keyLog(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)+" "+kind+" "+message);
+}
+bool ScreenService::queueKey(quint8 key) {
+    if(RemoteKey::name(key).isEmpty()) return false;
+    return queueInput({RemoteKey::keyboardPacket(key),"KEY",RemoteKey::name(key)});
+}
+bool ScreenService::queueTouch(quint16 x,quint16 y) {
+    if(image_.isNull() || x>=image_.width() || y>=image_.height()) return false;
+    return queueInput({RemoteKey::touchPacket(x,y),"TOUCH",QString("x=%1 y=%2").arg(x).arg(y)});
+}
+bool ScreenService::queueInput(const RemoteInput& input) {
+    if(!active_ || !continuous_ || stopping_) return false;
+    if(inputs_.size()>=32) { logKey("Queue full; dropped "+input.label,input.kind); return false; }
+    inputs_.enqueue(input);
+    if(expected_==0 && poll_.isActive()) poll_.start(0);
+    return true;
+}
+void ScreenService::nextCycle() {
+    if(!active_ || stopping_ || expected_) return;
+    if(!inputs_.isEmpty()) {
+        currentInput_=inputs_.dequeue(); const auto& packet=currentInput_.packet;
+        logKey("TX command 66 "+currentInput_.label+" payload "+QString::fromLatin1(packet.data.toHex(' ').toUpper())
+            +" wire "+QString::fromLatin1(LegacyCodec::encode(packet).toHex(' ').toUpper()),currentInput_.kind);
+        request(packet.command,packet.data);
+    } else request(67,QByteArray(1,char(0)));
 }
 void ScreenService::nextBlock() {
     QByteArray data; data.append(char(block_&255)); if(block_>255) data.append(char((block_>>8)&255));
@@ -107,6 +143,15 @@ void ScreenService::receive(const QByteArray& bytes) {
         for(const auto& p:codec_.feed(bytes)) {
             if(p.destination!=65 || p.sender!=66 || p.command!=expected_) throw std::runtime_error("Unexpected screen response");
             timeout_.stop(); expected_=0;
+            if(p.command==66) {
+                logKey("RX command 66 "+currentInput_.label+QString(" message 0x%1 payload %2")
+                    .arg(p.message,2,16,QChar('0')).arg(QString::fromLatin1(p.data.toHex(' ').toUpper())),currentInput_.kind);
+                if(p.message==69) { fail(QString("Remote input rejected, code %1").arg(quint8(p.data[0]))); return; }
+                logProfiler(p);
+                if(stopping_) { active_=false; emit activeChanged(false); return; }
+                // Always refresh the screen after one acknowledged key; don't starve frames.
+                request(67,QByteArray(1,char(0))); continue;
+            }
             if(p.message==69) throw std::runtime_error("Screen device error " + std::to_string(quint8(p.data[0])));
             if(stopping_) { active_=false; emit activeChanged(false); return; }
             if(p.command==67) {
@@ -139,7 +184,7 @@ void ScreenService::receive(const QByteArray& bytes) {
                         else message+="; diagnostic file could not be saved";
                     } else message+="; diagnostic directory could not be created";
                     // The complete reply was consumed: only decoding failed. Keep the connection usable.
-                    active_=false; expected_=0; timeout_.stop(); poll_.stop(); emit activeChanged(false); emit failed(message); return;
+                    inputs_.clear(); active_=false; expected_=0; timeout_.stop(); poll_.stop(); emit activeChanged(false); emit failed(message); return;
                 }
                 emit frameReady(image_);
                 ++frameCount_;
@@ -151,5 +196,21 @@ void ScreenService::receive(const QByteArray& bytes) {
             }
         }
     } catch(const std::exception& e) { fail(QString::fromUtf8(e.what())); }
+}
+void ScreenService::logProfiler(const Packet& reply) {
+    // Called only for the outstanding command 66 reply, after codec/LRC,
+    // address and device-error checks. W (0x57) is the observed reply marker.
+    if(reply.data.size()<6) return; // Old keyboard/touch acknowledgement.
+    if(reply.message!=0x57 || reply.data.size()!=6) {
+        emit profilerLog("Profiler: debug warning: unexpected command 66 profiler format; skipped");
+        return;
+    }
+    const quint16 p0Ms=qFromLittleEndian<quint16>(reply.data.constData());
+    const quint16 p1Ms=qFromLittleEndian<quint16>(reply.data.constData()+2);
+    const quint16 p2Ms=qFromLittleEndian<quint16>(reply.data.constData()+4);
+    const quint32 sumMs=quint32(p0Ms)+quint32(p1Ms)+quint32(p2Ms);
+    // Independent durations, not cumulative timestamps.
+    emit profilerLog(QString("Profiler PLANES: P0=%1 ms | P1=%2 ms | P2=%3 ms | SUM=%4 ms")
+        .arg(p0Ms).arg(p1Ms).arg(p2Ms).arg(sumMs));
 }
 }

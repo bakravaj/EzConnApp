@@ -4,6 +4,8 @@
 #include "core/ScreenService.h"
 #include <QDialog>
 #include "ScreenView.h"
+#include "RemoteKeyFilter.h"
+#include "ScannerPanel.h"
 #include <QApplication>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -31,6 +33,7 @@ int main(int argc, char** argv) {
     auto* button = new QPushButton("Connect"); layout->addWidget(button);
     auto* versionButton = new QPushButton("Read versions"); versionButton->setEnabled(false); layout->addWidget(versionButton);
     auto* screenButton = new QPushButton("Screen / Video"); screenButton->setEnabled(false); layout->addWidget(screenButton);
+    auto* scannerButton=new QPushButton("Scanner Emulator"); layout->addWidget(scannerButton);
     QDialog screenWindow(&window); screenWindow.setWindowTitle("Kaparossa screen"); screenWindow.resize(1000,760);
     auto* screenLayout=new QVBoxLayout(&screenWindow);
     auto* singleFrame=new QPushButton("Single frame"); auto* startVideo=new QPushButton("Start video"); auto* stopVideo=new QPushButton("Stop"); stopVideo->setEnabled(false);
@@ -52,17 +55,26 @@ int main(int argc, char** argv) {
     VersionProbe versions(session);
     ReadServices reads(session);
     ScreenService screen(session);
+    ScannerService scanner(session);
+    ScannerPanel scannerPanel(scanner,&window);
+    QObject::connect(scannerButton,&QPushButton::clicked,&window,[&]{scannerPanel.show(); scannerPanel.raise(); scannerPanel.activateWindow();});
+    QObject::connect(&scanner,&ScannerService::logLine,output,&QPlainTextEdit::appendPlainText);
+    QObject::connect(&scanner,&ScannerService::failed,output,[&](const QString& message){output->appendPlainText("Scanner error: "+message);});
+    RemoteKeyFilter keyFilter(&screenWindow,[&](quint8 key){screen.queueKey(key);});
+    screenView->touch=[&](QPoint point){screen.queueTouch(quint16(point.x()),quint16(point.y()));};
     bool authenticated=false;
     bool screenActive=false;
     int frameCount=0;
-    QObject::connect(screenButton,&QPushButton::clicked,&window,[&]{screenWindow.show(); screenWindow.raise();});
+    bool videoAfterProfiler=false;
+    QObject::connect(screenButton,&QPushButton::clicked,&window,[&]{screenWindow.show(); screenWindow.raise(); screenWindow.activateWindow(); screenView->setFocus();});
     auto configureScreen=[&]{frameCount=0; statsLabel->clear(); };
     QObject::connect(singleFrame,&QPushButton::clicked,&window,[&]{configureScreen(); screen.start(false);});
-    QObject::connect(startVideo,&QPushButton::clicked,&window,[&]{configureScreen(); screen.start(true);});
+    QObject::connect(startVideo,&QPushButton::clicked,&window,[&]{configureScreen(); screen.start(true); screenView->setFocus();});
     QObject::connect(stopVideo,&QPushButton::clicked,&window,[&]{screenStatus->setText("Stopping..."); screen.stop();});
     QObject::connect(&screenWindow,&QDialog::finished,&window,[&]{screen.stop();});
     QObject::connect(&screen,&ScreenService::activeChanged,&window,[&](bool active){
         screenActive=active; readPanel->setEnabled(authenticated && !active);
+        keyFilter.setActive(active);
         session.setWireLogging(!active);
         singleFrame->setEnabled(authenticated && !active); startVideo->setEnabled(authenticated && !active); stopVideo->setEnabled(active);
         screenStatus->setText(active ? "Receiving..." : "Stopped");
@@ -73,8 +85,15 @@ int main(int argc, char** argv) {
     });
     QObject::connect(&screen,&ScreenService::failed,&window,[&](const QString& error){ screenStatus->setText(error); output->appendPlainText("Screen: "+error); });
     QObject::connect(&screen,&ScreenService::status,&window,[&](const QString& message){ screenStatus->setText(message); output->appendPlainText("Screen: "+message); });
+    QObject::connect(&screen,&ScreenService::keyLog,output,&QPlainTextEdit::appendPlainText);
+    QObject::connect(&screen,&ScreenService::profilerLog,output,[&](const QString& message){
+        output->appendPlainText(message);
+        if(message.startsWith("Profiler PLANES: P0=")) videoAfterProfiler=true;
+    });
     QObject::connect(&screen,&ScreenService::statistics,&window,[&](const QString& message){
-        statsLabel->setText(message); if(frameCount==1 || frameCount%10==0) output->appendPlainText("Video: "+message);
+        statsLabel->setText(message);
+        if(videoAfterProfiler || frameCount==1 || frameCount%10==0) output->appendPlainText("Video: "+message);
+        videoAfterProfiler=false;
     });
     QString displayedPath;
     QObject::connect(listButton,&QPushButton::clicked,&window,[&]{ files->clear(); reads.listDirectory(path->text()); });
@@ -125,6 +144,23 @@ int main(int argc, char** argv) {
         }
         session.start(std::make_unique<TcpTransport>(endpoint));
     });
+    // Serialize the independent services on the existing authenticated session.
+    bool readBusy=false;
+    auto updateAvailability=[&]{
+        const bool connected=session.state()==MachineSession::State::Connected;
+        const bool free=authenticated && connected && !screenActive && !readBusy && !scanner.busy();
+        scanner.setReady(authenticated && connected && !screenActive && !readBusy);
+        scannerPanel.setAvailable(free);
+        readPanel->setEnabled(free);
+        screenButton->setEnabled(authenticated && connected && !readBusy && !scanner.busy());
+        singleFrame->setEnabled(free); startVideo->setEnabled(free);
+        versionButton->setEnabled(connected && !authenticated && !screenActive && !readBusy && !scanner.busy());
+    };
+    QObject::connect(&reads,&ReadServices::busyChanged,&window,[&](bool busy){readBusy=busy; updateAvailability();});
+    QObject::connect(&screen,&ScreenService::activeChanged,&window,[&](bool){updateAvailability();});
+    QObject::connect(&scanner,&ScannerService::busyChanged,&window,[&](bool){updateAvailability();});
+    QObject::connect(&versions,&VersionProbe::completed,&window,[&]{updateAvailability();});
+    QObject::connect(&session,&MachineSession::stateChanged,&window,[&](auto){updateAvailability();});
     window.show();
     return app.exec();
 }
